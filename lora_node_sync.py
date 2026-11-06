@@ -1,0 +1,587 @@
+# -*- coding: utf-8 -*-
+"""Synchronize LoRa mobile nodes and received order ASK packets to gateway.db."""
+import json
+import math
+import time
+import sqlite3
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
+
+import redis
+
+REDIS_HOST = "127.0.0.1"
+REDIS_PORT = 6379
+REDIS_DB = 0
+REDIS_NODE_PATTERN = "lora:nodes:*"
+REDIS_RECEIVED_ORDERS = "lora:orders:received"
+REDIS_RECEIVED_REPLIES = "lora:orders:replies"
+REDIS_RECEIVED_RECEIPTS = "lora:orders:receipts"
+SQLITE_PATH = "/var/lib/lora-gateway/gateway.db"
+SYNC_INTERVAL_SEC = 1.0
+ORDER_SYNC_INTERVAL_SEC = 5.0
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def json_loads_safe(value):
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def connect_db():
+    conn = sqlite3.connect(SQLITE_PATH, timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 10000")
+    return conn
+
+
+# ============================================================
+# BST-ID decode helper (existing functionality)
+# ============================================================
+
+def ytile_center_to_lat(ytile: int, z: int) -> float:
+    n = 2 ** z
+    y_center = ytile + 0.5
+    merc_n = math.pi * (1.0 - 2.0 * y_center / n)
+    return math.degrees(math.atan(math.sinh(merc_n)))
+
+
+def xtile_center_to_lon(xtile: int, z: int) -> float:
+    n = 2 ** z
+    x_center = xtile + 0.5
+    return x_center / n * 360.0 - 180.0
+
+
+def ytile_bounds(ytile: int, z: int) -> Dict[str, float]:
+    n = 2 ** z
+
+    def y_to_lat(y):
+        merc_n = math.pi * (1.0 - 2.0 * y / n)
+        return math.degrees(math.atan(math.sinh(merc_n)))
+
+    return {"north": y_to_lat(ytile), "south": y_to_lat(ytile + 1)}
+
+
+def xtile_bounds(xtile: int, z: int) -> Dict[str, float]:
+    n = 2 ** z
+    return {
+        "west": xtile / n * 360.0 - 180.0,
+        "east": (xtile + 1) / n * 360.0 - 180.0,
+    }
+
+
+def parse_bst_id_xy_from_hex(bst_hex: str, bit_len: int) -> Optional[Dict[str, Any]]:
+    """Decode XY tile data from the BST-ID flags/zoom/coordinate bit layout."""
+    if not bst_hex or not bit_len:
+        return None
+
+    value = int(bst_hex, 16)
+    bits = format(value, f"0{bit_len}b")
+    if len(bits) < 4:
+        return None
+
+    flags = bits[:4]
+    pos = 4
+    axes = ["x", "y", "h", "t"]
+    parsed: Dict[str, Dict[str, int]] = {}
+
+    for i, axis in enumerate(axes):
+        if flags[i] != "1":
+            continue
+        if pos + 5 > len(bits):
+            return None
+        zoom = int(bits[pos:pos + 5], 2) + 1
+        pos += 5
+        if pos + zoom > len(bits):
+            return None
+        coord = int(bits[pos:pos + zoom], 2)
+        pos += zoom
+        parsed[axis] = {"zoom": zoom, "coord": coord}
+
+    if "x" not in parsed or "y" not in parsed:
+        return None
+
+    zx = parsed["x"]["zoom"]
+    zy = parsed["y"]["zoom"]
+    xtile = parsed["x"]["coord"]
+    ytile = parsed["y"]["coord"]
+    xb = xtile_bounds(xtile, zx)
+    yb = ytile_bounds(ytile, zy)
+
+    if zx == zy:
+        bst_xy = f"XY:z{zx}:x{xtile}:y{ytile}"
+    else:
+        bst_xy = f"XY:zx{zx}:zy{zy}:x{xtile}:y{ytile}"
+
+    return {
+        "lat": ytile_center_to_lat(ytile, zy),
+        "lon": xtile_center_to_lon(xtile, zx),
+        "zx": zx,
+        "zy": zy,
+        "xtile": xtile,
+        "ytile": ytile,
+        "bst_xy": bst_xy,
+        "bounds": {**yb, **xb},
+        "flags": flags,
+        "bits": bits,
+    }
+
+
+# ============================================================
+# DB schema / mobile node sync (existing functionality)
+# ============================================================
+
+def ensure_schema(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mobile_nodes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            node_id TEXT UNIQUE NOT NULL,
+            node_type TEXT DEFAULT 'mobile',
+            lat REAL,
+            lon REAL,
+            alt REAL,
+            speed_mps REAL,
+            heading_deg REAL,
+            bst_xy TEXT,
+            bst_id_int TEXT,
+            bst_bit_len INTEGER,
+            status TEXT DEFAULT 'active',
+            last_report_at TEXT,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+    # REPLY(C): one receipt confirmation per ASK.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS order_receipts (
+            ask_pkt_id TEXT PRIMARY KEY,
+            order_id TEXT NOT NULL,
+            origin_node TEXT NOT NULL,
+            received_by TEXT NOT NULL,
+            item_code TEXT NOT NULL,
+            requested_qty INTEGER NOT NULL,
+            received_qty INTEGER NOT NULL,
+            received_at TEXT NOT NULL,
+            synced_at TEXT NOT NULL
+        )"""
+    )
+
+    conn.commit()
+
+
+def sync_one_node(conn, node):
+    node_id = node.get("node_id")
+    if not node_id:
+        return
+
+    lat = node.get("lat")
+    lon = node.get("lon")
+    alt = node.get("alt")
+    speed_mps = node.get("speed_mps")
+    heading_deg = node.get("heading_deg")
+    bst_xy = node.get("bst_xy")
+    bst_id_int = node.get("bst_id_int")
+    bst_bit_len = node.get("bst_bit_len")
+    bst_hex = node.get("bst_hex")
+
+    if (lat is None or lon is None) and bst_hex and bst_bit_len:
+        decoded = parse_bst_id_xy_from_hex(
+            bst_hex=str(bst_hex), bit_len=int(bst_bit_len)
+        )
+        if decoded:
+            lat = decoded["lat"]
+            lon = decoded["lon"]
+            bst_xy = decoded["bst_xy"]
+            node["decoded_bst"] = decoded
+
+    now = utc_now_iso()
+    conn.execute(
+        """
+        INSERT INTO mobile_nodes
+        (
+            node_id, node_type, lat, lon, alt, speed_mps, heading_deg,
+            bst_xy, bst_id_int, bst_bit_len, status, last_report_at, updated_at
+        )
+        VALUES (?, 'mobile', ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+        ON CONFLICT(node_id) DO UPDATE SET
+            lat = excluded.lat,
+            lon = excluded.lon,
+            alt = excluded.alt,
+            speed_mps = excluded.speed_mps,
+            heading_deg = excluded.heading_deg,
+            bst_xy = excluded.bst_xy,
+            bst_id_int = excluded.bst_id_int,
+            bst_bit_len = excluded.bst_bit_len,
+            status = excluded.status,
+            last_report_at = excluded.last_report_at,
+            updated_at = excluded.updated_at
+        """,
+        [
+            node_id, lat, lon, alt, speed_mps, heading_deg, bst_xy,
+            str(bst_id_int) if bst_id_int is not None else None,
+            int(bst_bit_len) if bst_bit_len is not None else None,
+            now, now,
+        ],
+    )
+
+
+# ============================================================
+# Received LoRa order ASK -> existing Web orders / order_items
+# ============================================================
+
+def decode_order_goal(record):
+    """Best-effort XY tile decoding. Decimal goal_bst is used in routing JSON."""
+    try:
+        raw = record.get("goal_bst")
+        nbits = int(record.get("goal_bit_len", 0))
+        if raw is None or nbits <= 0:
+            return None
+        value = int(str(raw), 10)
+        if value < 0 or value.bit_length() > nbits:
+            return None
+        return parse_bst_id_xy_from_hex(format(value, "x"), nbits)
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def sync_one_order(conn, record):
+    """Return True only when a new order was inserted.
+
+    One LoRa ASK packet maps to one Web order. No original Web order_id is
+    transmitted yet, so multiple item packets cannot be regrouped here.
+    """
+    if not isinstance(record, dict) or record.get("source") != "LORA_ORDER_ASK":
+        return False
+
+    pkt_id = str(record.get("pkt_id") or "").strip()
+    origin = str(record.get("origin_node") or "").strip()
+    item_code = str(record.get("item_code") or "").strip()
+    if not pkt_id or not origin or not item_code:
+        print(f"[LORA-ORDER-SKIP] missing fields: {record}", flush=True)
+        return False
+
+    try:
+        qty = int(record.get("requested_qty"))
+    except (ValueError, TypeError):
+        print(f"[LORA-ORDER-SKIP] invalid quantity: pkt={pkt_id}", flush=True)
+        return False
+    if qty <= 0:
+        print(f"[LORA-ORDER-SKIP] nonpositive quantity: pkt={pkt_id}", flush=True)
+        return False
+
+    order_id = f"lora-{pkt_id}"
+    if conn.execute("SELECT 1 FROM orders WHERE order_id = ?", (order_id,)).fetchone():
+        return False
+
+    if not conn.execute(
+        "SELECT 1 FROM item_master WHERE item_code = ?", (item_code,)
+    ).fetchone():
+        print(f"[LORA-ORDER-SKIP] unknown item_code={item_code} pkt={pkt_id}", flush=True)
+        return False
+
+    # ASK carries a BST integer, not the original clicked lat/lon.
+    # Do not guess a map position before confirming the exact wire encoding.
+    goal = None
+    raw_goal = record.get("goal_bst")
+    raw_len = record.get("goal_bit_len")
+    area_label = goal["bst_xy"] if goal else f"BST:{raw_goal}/{raw_len}"
+    now = utc_now_iso()
+    columns = (
+        "order_id, requester_node, target_area, status, note, created_at, updated_at, "
+        "target_lat, target_lon, target_level, target_area_label, "
+        "target_zx, target_zy, target_xtile, target_ytile, "
+        "target_south, target_north, target_west, target_east, target_bst_xy"
+    )
+    target = goal or {}
+    bounds = target.get("bounds", {})
+    values = (
+        order_id, origin, area_label, "open",
+        f"LoRa ASK pkt_id={pkt_id}; received_by={record.get('received_by', '')}",
+        now, now,
+        target.get("lat"), target.get("lon"), target.get("zx"), area_label,
+        target.get("zx"), target.get("zy"), target.get("xtile"),
+        target.get("ytile"), bounds.get("south"), bounds.get("north"),
+        bounds.get("west"), bounds.get("east"), target.get("bst_xy"),
+    )
+
+    # Caller wraps both INSERTs in a single transaction.
+    placeholders = ", ".join("?" for _ in values)
+    conn.execute(f"INSERT INTO orders ({columns}) VALUES ({placeholders})", values)
+    conn.execute(
+        """
+        INSERT INTO order_items
+            (order_id, item_code, requested_qty, accepted_qty, fulfilled_qty, remaining_qty)
+        VALUES (?, ?, ?, 0, 0, ?)
+        """,
+        (order_id, item_code, qty, qty),
+    )
+    print(
+        f"[LORA-ORDER-SYNC] order={order_id} from={origin} "
+        f"item={item_code} qty={qty}",
+        flush=True,
+    )
+    return True
+
+
+def sync_received_orders(r, conn):
+    # History remains in Redis. Re-reading is safe because order_id is unique.
+    # The list must be retained in Redis until at least one successful sync.
+    records = r.lrange(REDIS_RECEIVED_ORDERS, 0, -1)
+    added = 0
+    for raw in reversed(records):  # oldest first
+        record = json_loads_safe(raw)
+        if not isinstance(record, dict):
+            continue
+        try:
+            # Keep each order's parent+item insert atomic even if one fails.
+            with conn:
+                if sync_one_order(conn, record):
+                    added += 1
+        except sqlite3.Error as exc:
+            print(
+                f"[LORA-ORDER-SYNC-ERR] pkt={record.get('pkt_id')} {exc}",
+                flush=True,
+            )
+    return added
+
+
+# ============================================================
+# Received LoRa order REPLY -> sender Web offers / offer_items
+# ============================================================
+
+def sync_one_order_reply(conn, record):
+    if not isinstance(record, dict) or record.get("source") != "LORA_ORDER_REPLY":
+        return False
+    ask_pkt_id = str(record.get("ask_pkt_id") or "")
+    order_id = str(record.get("order_id") or "")
+    item_code = str(record.get("item_code") or "")
+    responder = str(record.get("responder_node") or "")
+    try:
+        qty = int(record["accepted_qty"])
+    except (KeyError, ValueError, TypeError):
+        return False
+    if not ask_pkt_id or not order_id or not item_code or not responder or qty < 0:
+        return False
+    offer_id = "lora-reply-" + ask_pkt_id
+    if conn.execute("SELECT 1 FROM offers WHERE offer_id=?", (offer_id,)).fetchone():
+        return False
+    row = conn.execute(
+        "SELECT id, requested_qty, remaining_qty FROM order_items "
+        "WHERE order_id=? AND item_code=?",
+        (order_id, item_code),
+    ).fetchone()
+    if row is None:
+        print(f"[LORA-REPLY-SKIP] unknown order/item: {order_id}/{item_code}", flush=True)
+        return False
+    remaining = int(row["remaining_qty"])
+    if qty > remaining:
+        print(f"[LORA-REPLY-SKIP] qty > remaining: {order_id} {qty}>{remaining}", flush=True)
+        return False
+    now = utc_now_iso()
+    conn.execute(
+        "INSERT INTO offers (offer_id, order_id, responder_node, status, note, "
+        "created_at, updated_at) VALUES (?, ?, ?, 'offered', ?, ?, ?)",
+        (offer_id, order_id, responder,
+         f"LoRa REPLY ask_pkt_id={ask_pkt_id}" + (" / 在庫なし" if qty == 0 else ""), now, now),
+    )
+    # Persist the zero-quantity row as well, so the Web UI can display
+    # an explicit stock-out response instead of an empty offer.
+    conn.execute(
+        "INSERT INTO offer_items (offer_id, item_code, offered_qty, accepted_qty) "
+        "VALUES (?, ?, ?, ?)",
+        (offer_id, item_code, qty, qty),
+    )
+    if qty > 0:
+        conn.execute(
+            "UPDATE order_items SET accepted_qty=accepted_qty+?, "
+            "remaining_qty=MAX(remaining_qty-?,0) WHERE id=?",
+            (qty, qty, row["id"]),
+        )
+    summary = conn.execute(
+        "SELECT SUM(remaining_qty) FROM order_items WHERE order_id=?", (order_id,)
+    ).fetchone()
+    status = "fulfilled" if summary[0] is not None and int(summary[0]) == 0 else "open"
+    conn.execute(
+        "UPDATE orders SET status=?, updated_at=? WHERE order_id=?",
+        (status, now, order_id),
+    )
+    print(f"[LORA-REPLY-SYNC] order={order_id} item={item_code} "
+          f"accepted={qty} responder={responder}", flush=True)
+    return True
+
+
+def sync_received_order_replies(r, conn):
+    added = 0
+    for raw in reversed(r.lrange(REDIS_RECEIVED_REPLIES, 0, -1)):
+        record = json_loads_safe(raw)
+        if not isinstance(record, dict):
+            continue
+        try:
+            # Atomically insert offer and update the order quantities.
+            with conn:
+                if sync_one_order_reply(conn, record):
+                    added += 1
+        except sqlite3.Error as exc:
+            print(f"[LORA-REPLY-SYNC-ERR] ask={record.get('ask_pkt_id')} {exc}",
+                  flush=True)
+    return added
+
+
+# ============================================================
+# Received REPLY(C) -> SQLite receipt / fulfilled quantity
+# ============================================================
+
+def sync_one_order_receipt(conn, record):
+    if not isinstance(record, dict) or record.get("source") != "LORA_ORDER_RECEIPT":
+        return False
+
+    ask_id = str(record.get("ask_pkt_id") or "")
+    order_id = str(record.get("order_id") or "")
+    origin = str(record.get("origin_node") or "")
+    responder = str(record.get("received_by") or "")
+    item_code = str(record.get("item_code") or "")
+
+    try:
+        requested = int(record["requested_qty"])
+        received = int(record["received_qty"])
+        received_at = datetime.fromtimestamp(
+            float(record["received_at"]), timezone.utc
+        ).isoformat()
+    except (KeyError, ValueError, TypeError, OverflowError, OSError):
+        return False
+
+    if (not all((ask_id, order_id, origin, responder, item_code))
+            or "-" not in ask_id or ask_id.split("-", 1)[0] != origin
+            or order_id != f"lora-{ask_id}" or not 0 < received <= requested):
+        return False
+
+    # 同じASKについて受領記録は1つだけ
+    if conn.execute(
+        "SELECT 1 FROM order_receipts WHERE ask_pkt_id=?", (ask_id,)
+    ).fetchone():
+        return False
+
+    # 元の発注内容を確認
+    row = conn.execute(
+        """SELECT o.requester_node, i.id, i.requested_qty,
+                  i.accepted_qty, i.fulfilled_qty
+           FROM orders o JOIN order_items i ON o.order_id=i.order_id
+           WHERE o.order_id=? AND i.item_code=?""",
+        (order_id, item_code),
+    ).fetchone()
+
+    if (row is None or str(row["requester_node"]) != origin
+            or int(row["requested_qty"]) != requested):
+        return False
+
+    # 受注元がWebで回答した提供数量と照合
+    offered = conn.execute(
+        """SELECT COALESCE(SUM(oi.accepted_qty), 0)
+           FROM offers o JOIN offer_items oi ON o.offer_id=oi.offer_id
+           WHERE o.order_id=? AND o.responder_node=? AND oi.item_code=?""",
+        (order_id, responder, item_code),
+    ).fetchone()[0]
+
+    if (received != int(offered)
+            or int(row["fulfilled_qty"]) + received > int(row["accepted_qty"])):
+        print(f"[LORA-RECEIPT-SKIP] unmatched offer ask={ask_id}", flush=True)
+        return False
+
+    now = utc_now_iso()
+
+    # 受領記録を保存
+    conn.execute(
+        """INSERT INTO order_receipts
+           (ask_pkt_id, order_id, origin_node, received_by, item_code,
+            requested_qty, received_qty, received_at, synced_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (ask_id, order_id, origin, responder, item_code,
+         requested, received, received_at, now),
+    )
+
+    # 実際に受領された数量を反映
+    conn.execute(
+        "UPDATE order_items SET fulfilled_qty=fulfilled_qty+? WHERE id=?",
+        (received, row["id"]),
+    )
+
+    conn.execute(
+        "UPDATE orders SET updated_at=? WHERE order_id=?", (now, order_id)
+    )
+
+    print(
+        f"[LORA-RECEIPT-SYNC] ask={ask_id} "
+        f"item={item_code} qty={received}",
+        flush=True,
+    )
+    return True
+
+
+def sync_received_order_receipts(r, conn):
+    added = 0
+
+    for raw in reversed(r.lrange(REDIS_RECEIVED_RECEIPTS, 0, -1)):
+        record = json_loads_safe(raw)
+
+        try:
+            # 受領記録の追加と数量更新を同じトランザクションで実行
+            with conn:
+                if sync_one_order_receipt(conn, record):
+                    added += 1
+
+        except sqlite3.Error as exc:
+            print(f"[LORA-RECEIPT-SYNC-ERR] {exc}", flush=True)
+
+    return added
+
+
+def main():
+    r = redis.Redis(
+        host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True
+    )
+    conn = connect_db()
+    ensure_schema(conn)
+    print("[LORA-NODE-SYNC] started (nodes + orders)", flush=True)
+    last_order_sync = 0.0
+
+    while True:
+        try:
+            keys = list(r.scan_iter(match=REDIS_NODE_PATTERN, count=100))
+            count = 0
+            for key in keys:
+                value = r.get(key)
+                node = json_loads_safe(value)
+                if not node:
+                    continue
+                sync_one_node(conn, node)
+                count += 1
+            conn.commit()
+            if count > 0:
+                print(f"[LORA-NODE-SYNC] synced {count} nodes", flush=True)
+        except Exception as exc:
+            conn.rollback()
+            print(f"[LORA-NODE-SYNC-ERR] {exc}", flush=True)
+
+        if time.monotonic() - last_order_sync >= ORDER_SYNC_INTERVAL_SEC:
+            try:
+                sync_received_orders(r, conn)
+                sync_received_order_replies(r, conn)
+                sync_received_order_receipts(r, conn)
+            except Exception as exc:
+                conn.rollback()
+                print(f"[LORA-ORDER-SYNC-ERR] {exc}", flush=True)
+            last_order_sync = time.monotonic()
+
+        time.sleep(SYNC_INTERVAL_SEC)
+
+
+if __name__ == "__main__":
+    main()

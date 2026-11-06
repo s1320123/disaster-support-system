@@ -1,0 +1,20 @@
+node_modules/
+.env
+*.log
+.DS_Store
+*.db
+*.sqlite
+*.sqlite3
+.venv/
+
+# Local environment
+.env
+.env.*
+!.env.example
+.venv/
+node_modules/
+__pycache__/
+*.pyc
+*.db
+*.sqlite
+*.sqlite3
