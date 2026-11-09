@@ -268,3 +268,55 @@ pre {
     margin-bottom: 2px;
   }
 }
+
+/* ===== Disaster Dashboard Dark Theme ===== */
+
+:root {
+  --bg: #0b1220;
+  --card: #172338;
+  --text: #eaf2ff;
+  --muted: #94a3b8;
+  --border: #293a55;
+  --primary: #12253f;
+  --primary-light: #1e4064;
+  --accent: #22d3ee;
+  --warning: #f59e0b;
+  --ok: #34d399;
+  --bad: #f87171;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.card {
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+}
+
+table {
+  background: transparent;
+}
+
+th {
+  background: #22334e;
+}
+
+td {
+  background: transparent;
+}
+
+nav a,
+a.button-link {
+  background: #22334e;
+  color: #eaf2ff;
+}
+
+pre {
+  background: #0f1c30;
+  color: #a5f3fc;
+}
+
+#map {
+  border-color: var(--border);
+}
