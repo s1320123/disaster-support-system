@@ -6,6 +6,7 @@
   <title>発注画面</title>
 
   <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/orders.css">
 
   <link
     rel="stylesheet"
@@ -45,8 +46,8 @@
 
   <main>
     <nav>
-      <a href="/mobile">Mobile Home</a>
-      <a href="/">GPS Dashboard</a>
+      <a href="/mobile">モバイル画面</a>
+      <a href="/">GPSマップ</a>
       <a href="/orders">発注一覧</a>
       <a href="/requests">受注画面</a>
     </nav>
@@ -119,6 +120,8 @@
 
         <br>
 
+        <details class="tile-details">
+          <summary>詳細な位置情報・BST-IDを表示</summary>
         <div class="grid">
           <div class="card">
             <h3>Clicked Point</h3>
@@ -150,15 +153,48 @@
             </table>
           </div>
         </div>
-      </div>
+      </details>
+    </div>
+<h2>必要物資</h2>
+<p class="small">必要な物資の数量を入力してください。不要な物資は0のままで大丈夫です。</p>
 
-      <h2>必要物資</h2>
+<%
+  const categoryGroups = [
+    { title: "食料・飲料", categories: ["食料・飲料", "食"] },
+    { title: "医薬・衛生", categories: ["医薬・衛生"] },
+    { title: "生活用品", categories: ["生活用品"] },
+    { title: "電源・照明", categories: ["電源・照明"] }
+  ];
+
+  const groupedCodes = new Set();
+
+  categoryGroups.forEach(group => {
+    items.filter(item => group.categories.includes(item.category))
+      .forEach(item => groupedCodes.add(item.item_code));
+  });
+
+  const otherItems = items.filter(item => !groupedCodes.has(item.item_code));
+  if (otherItems.length > 0) {
+    categoryGroups.push({ title: "その他", categories: [] });
+  }
+%>
+
+<% categoryGroups.forEach(group => { %>
+  <%
+    const groupItems = group.title === "その他"
+      ? otherItems
+      : items.filter(item => group.categories.includes(item.category));
+  %>
+
+  <% if (groupItems.length > 0) { %>
+    <section class="supply-category">
+      <h3><%= group.title %></h3>
 
       <div class="item-grid">
-        <% items.forEach(item => { %>
+        <% groupItems.forEach(item => { %>
           <div class="card">
             <div class="item-title"><%= item.item_name %></div>
-            <p class="small"><%= item.category %> / 単位: <%= item.unit %></p>
+            <p class="small">単位：<%= item.unit %></p>
 
             <label>
               必要数
@@ -171,6 +207,9 @@
           </div>
         <% }) %>
       </div>
+    </section>
+  <% } %>
+<% }) %>
 
       <button type="submit">必要数を通知する</button>
     </form>

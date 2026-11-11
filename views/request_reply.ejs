@@ -3,19 +3,21 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>受注Reply</title>
+  <title>受注返信
+  </title>
   <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/orders.css">
 </head>
 
 <body>
   <header>
-    <h1>受注Reply</h1>
+    <h1>受注返信</h1>
   </header>
 
   <main>
     <nav>
-      <a href="/mobile">Mobile Home</a>
-      <a href="/">GPS Dashboard</a>
+      <a href="/mobile">モバイル画面</a>
+      <a href="/">GPSマップ</a>
       <a href="/requests">受注画面</a>
       <a href="/orders/<%= order.order_id %>">発注詳細</a>
     </nav>
@@ -34,7 +36,7 @@
           <input type="text" name="responder_node" value="mock-shelter-b">
         </label>
 
-        <br><br>
+        <br>
 
         <label>
           備考
@@ -68,7 +70,7 @@
         <% }) %>
       </div>
 
-      <button type="submit">提供可能数をReplyする</button>
+      <button type="submit">提供可能数を返信する</button>
     </form>
   </main>
 </body>

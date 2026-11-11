@@ -1,0 +1,294 @@
+
+/* 物資管理画面専用スタイル */
+
+body {
+    background: #0b1220;
+    color: #eaf2ff;
+    line-height: 1.6;
+  }
+
+  main {
+    max-width: 1280px;
+    padding: 28px 24px 60px;
+  }
+
+  /* ナビゲーション */
+  nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 0 0 28px;
+  }
+
+  nav a,
+  nav a.primary {
+    margin: 0;
+    padding: 10px 16px;
+    border-radius: 8px;
+    text-decoration: none;
+  }
+
+  nav a {
+    background: #22334e;
+    color: #eaf2ff;
+  }
+
+  nav a.primary {
+    background: #22d3ee;
+    color: #0b1220;
+    font-weight: 700;
+  }
+
+  /* カード */
+  .card {
+    background: #172338;
+    border: 1px solid #293a55;
+    border-radius: 12px;
+    padding: 22px;
+    margin-bottom: 20px;
+  }
+
+  .card h2 {
+    font-size: 1.15rem;
+    margin-bottom: 18px;
+  }
+
+  /* テーブル */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: transparent;
+  }
+
+  th,
+  td {
+    padding: 13px 14px;
+    border: none;
+    border-bottom: 1px solid #293a55;
+    text-align: left;
+  }
+
+  th {
+    background: #22334e;
+    color: #cbd5e1;
+    font-size: 0.85rem;
+    font-weight: 600;
+  }
+
+  td {
+    background: transparent;
+    font-size: 0.92rem;
+  }
+
+  tbody tr:hover {
+    background: #1c2c45;
+  }
+
+  td a {
+    color: #67e8f9;
+    font-weight: 600;
+  }
+
+  /* 入力フォーム */
+  input[type="text"],
+  input[type="number"],
+  textarea,
+  select {
+    background: #0f1c30;
+    color: #eaf2ff;
+    border: 1px solid #344763;
+    border-radius: 8px;
+    padding: 12px;
+  }
+
+  input:focus,
+  textarea:focus,
+  select:focus {
+    outline: 2px solid #22d3ee;
+    outline-offset: 2px;
+  }
+
+  label {
+    display: block;
+    color: #cbd5e1;
+    font-weight: 500;
+  }
+
+  /* ボタン */
+  button,
+  input[type="submit"] {
+    background: #22d3ee;
+    color: #0b1220;
+    font-weight: 700;
+    border-radius: 9px;
+  }
+
+  button:hover,
+  input[type="submit"]:hover {
+    background: #67e8f9;
+  }
+
+  /* 物資カード */
+  .item-grid {
+    gap: 16px;
+  }
+
+  .item-title {
+    color: #eaf2ff;
+    font-size: 1.05rem;
+  }
+
+  .small,
+  .muted {
+    color: #94a3b8;
+  }
+
+  /* 状態 */
+  .status-open {
+    color: #fbbf24;
+  }
+
+  .status-fulfilled {
+    color: #34d399;
+  }
+
+  /* スマートフォン */
+  @media (max-width: 700px) {
+    main {
+      padding: 16px 12px 40px;
+    }
+
+    nav {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    nav a,
+    nav a.primary {
+      display: block;
+      width: 100%;
+      text-align: center;
+      margin: 0;
+      padding: 10px 8px;
+      font-size: 0.85rem;
+    }
+
+    .card {
+      padding: 16px;
+    }
+
+    table.responsive-table tr {
+      background: #172338;
+      border-color: #293a55;
+    }
+
+    table.responsive-table td {
+      border-bottom: 1px solid #293a55;
+    }
+
+    table.responsive-table td::before {
+      color: #94a3b8;
+    }
+  }
+  /* BST-ID詳細情報の折りたたみ */
+.tile-details {
+  margin-top: 20px;
+}
+
+.tile-details summary {
+  cursor: pointer;
+  padding: 14px 18px;
+  background: #22334e;
+  border: 1px solid #293a55;
+  border-radius: 9px;
+  color: #67e8f9;
+  font-weight: 600;
+}
+
+.tile-details[open] summary {
+  margin-bottom: 16px;
+}
+
+
+/* 物資カテゴリー */
+.supply-category {
+  margin: 28px 0 34px;
+}
+
+.supply-category h3 {
+  font-size: 1.05rem;
+  color: #67e8f9;
+  margin: 0 0 14px;
+  padding-left: 12px;
+  border-left: 3px solid #22d3ee;
+}
+
+.supply-category .card {
+  margin-bottom: 0;
+}
+/* 発注一覧：表の横スクロール */
+.orders-table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  border-radius: 10px;
+}
+
+/* 表の列幅を確保して、文字の縦折り返しを防ぐ */
+.orders-table-scroll table {
+  min-width: 1250px;
+  width: 100%;
+}
+
+.orders-table-scroll th,
+.orders-table-scroll td {
+  white-space: nowrap;
+  padding: 14px 16px;
+  text-align: left;
+}
+/* 受注画面：回答リンク */
+a[href^="/requests/"][href$="/reply"] {
+  color: #67e8f9;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+/* 受注一覧：表の横幅を確保 */
+body:has(a[href^="/requests/"][href$="/reply"]) table {
+  min-width: 1100px;
+}
+
+body:has(a[href^="/requests/"][href$="/reply"]) th,
+body:has(a[href^="/requests/"][href$="/reply"]) td {
+  white-space: nowrap;
+}
+
+/* 回答リンクを見やすい水色に */
+a[href^="/requests/"][href$="/reply"] {
+  color: #67e8f9;
+  font-weight: 600;
+  white-space: nowrap;
+}
+/* 受注一覧の横スクロール */
+.orders-table-scroll {
+  width: 100%;
+  overflow-x: auto;
+}
+
+/* 受注一覧の列幅 */
+.orders-table-scroll table {
+  min-width: 1250px;
+  width: 100%;
+}
+
+.orders-table-scroll th,
+.orders-table-scroll td {
+  white-space: nowrap;
+  padding: 14px 16px;
+}
+
+/* 提供可能数を返すリンク */
+.orders-table-scroll td a {
+  color: #67e8f9;
+  white-space: nowrap;
+}
