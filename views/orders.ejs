@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>発注一覧</title>
   <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/orders.css">
 </head>
 
 <body>
@@ -14,14 +15,15 @@
 
   <main>
     <nav>
-      <a href="/mobile">Mobile Home</a>
-      <a href="/">GPS Dashboard</a>
+      <a href="/mobile">モバイル画面</a>
+      <a href="/">GPS マップ</a>
       <a class="primary" href="/orders/new">新規発注</a>
       <a href="/requests">受注画面</a>
     </nav>
 
-    <table class="responsive-table">
-      <thead>
+    <div class="orders-table-scroll">
+      <table class="responsive-table">
+        <thead>
         <tr>
           <th>Order ID</th>
           <th>発注ノード</th>
@@ -70,6 +72,7 @@
         <% }) %>
       </tbody>
     </table>
+  </div>
   </main>
 </body>
 </html>
