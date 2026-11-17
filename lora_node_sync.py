@@ -332,8 +332,15 @@ def sync_one_order(conn, record):
 
 
 def sync_received_orders(r, conn):
-    # History remains in Redis. Re-reading is safe because order_id is unique.
-    # The list must be retained in Redis until at least one successful sync.
+    # 現在の基地局IDをRedisから取得
+    local_node_id = r.get("lora:gateway:local_node_id")
+
+    if not local_node_id or not (
+        len(local_node_id) == 4 and local_node_id.isdigit()
+    ):
+        raise ValueError("基地局IDを取得できません")
+
+    # History remains in Redis.
     records = r.lrange(REDIS_RECEIVED_ORDERS, 0, -1)
     added = 0
     for raw in reversed(records):  # oldest first
@@ -341,10 +348,54 @@ def sync_received_orders(r, conn):
         if not isinstance(record, dict):
             continue
         try:
-            # Keep each order's parent+item insert atomic even if one fails.
+            # 発注データをSQLiteへ保存
             with conn:
-                if sync_one_order(conn, record):
-                    added += 1
+                inserted = sync_one_order(conn, record)
+
+                if inserted:
+                    order_id = f"lora-{record['pkt_id']}"
+
+                    # 新規発注通知をSQLiteへ保存
+                    conn.execute(
+                        """
+                        INSERT INTO notifications
+                            (node_id, type, title, message)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            local_node_id,
+                            "order",
+                            "新しい物資の発注",
+                            (
+                                f"拠点{record['origin_node']}から"
+                                f"物資{record['item_code']} "
+                                f"{record['requested_qty']}個の要請が届きました"
+                            ),
+                        ),
+                    )
+
+            if inserted:
+                added += 1
+
+                # SQLiteへの保存が完了した後にRedisへ通知
+                try:
+                    r.publish(
+                        "event:notification:new",
+                        json.dumps({
+                            "node_id": local_node_id,
+                            "type": "order",
+                            "order_id": order_id,
+                        }),
+                    )
+                    print(
+                        f"[NOTIFICATION] Published: {order_id}",
+                        flush=True,
+                    )
+                except redis.RedisError as exc:
+                    print(
+                        f"[NOTIFICATION-PUBLISH-ERR] {exc}",
+                        flush=True,
+                    )
         except sqlite3.Error as exc:
             print(
                 f"[LORA-ORDER-SYNC-ERR] pkt={record.get('pkt_id')} {exc}",

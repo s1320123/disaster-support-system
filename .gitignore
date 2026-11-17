@@ -19,3 +19,6 @@ __pycache__/
 *.sqlite
 *.sqlite3
 dev-data/
+
+# Local database backups
+backups/

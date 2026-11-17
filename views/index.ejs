@@ -60,10 +60,45 @@
           <h1>LoRa Gateway GPS Dashboard</h1>
         </div>
 
-        <div class="topbar-right">
-          <span class="system-label">LoRa通信拠点</span>
-          <span class="topbar-version">システム v1.0</span>
-        </div>
+
+<div class="topbar-right">
+
+  <div class="notification-wrapper">
+
+    <button id="notification-button"
+            class="notification-button"
+            type="button"
+            aria-label="通知一覧を開く"
+            aria-expanded="false"
+            aria-controls="notification-panel">
+      🔔
+      <span id="notification-count"
+            class="notification-count"
+            hidden>0</span>
+    </button>
+
+    <div id="notification-panel"
+         class="notification-panel"
+         hidden>
+
+      <div class="notification-header">
+        <strong>通知一覧</strong>
+        <span id="notification-unread">未読 0件</span>
+      </div>
+
+      <div id="notification-list"
+           class="notification-list">
+        通知を読み込み中...
+      </div>
+
+    </div>
+  </div>
+
+  <span class="system-label">LoRa通信拠点</span>
+  <span class="topbar-version">システム v1.0</span>
+
+</div>
+
       </header>
 
       <main class="dashboard-main">
@@ -864,4 +899,6 @@
   </script>
 
 </body>
+<script src="/socket.io/socket.io.js"></script>
+<script src="/js/notifications.js"></script>
 </html>
