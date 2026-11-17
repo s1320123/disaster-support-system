@@ -471,18 +471,73 @@ def sync_one_order_reply(conn, record):
 
 def sync_received_order_replies(r, conn):
     added = 0
+
+    local_node_id = r.get("lora:gateway:local_node_id")
+    if isinstance(local_node_id, bytes):
+        local_node_id = local_node_id.decode("utf-8")
+    local_node_id = str(local_node_id or "").strip()
+
     for raw in reversed(r.lrange(REDIS_RECEIVED_REPLIES, 0, -1)):
         record = json_loads_safe(raw)
         if not isinstance(record, dict):
             continue
+
         try:
-            # Atomically insert offer and update the order quantities.
+            inserted = False
+
+            # 回答と通知を同じトランザクションで保存
             with conn:
-                if sync_one_order_reply(conn, record):
-                    added += 1
+                inserted = sync_one_order_reply(conn, record)
+
+                if inserted and local_node_id:
+                    conn.execute(
+                        """
+                        INSERT INTO notifications
+                            (node_id, type, title, message)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            local_node_id,
+                            "status",
+                            "物資提供の回答が届きました",
+                            (
+                                f"拠点{record['responder_node']}から"
+                                f"物資{record['item_code']} "
+                                f"{record['accepted_qty']}個の提供回答が届きました"
+                            ),
+                        ),
+                    )
+
+            # 保存成功後にRedisへ通知
+            if inserted:
+                added += 1
+
+                if local_node_id:
+                    try:
+                        r.publish(
+                            "event:notification:new",
+                            json.dumps({
+                                "node_id": local_node_id,
+                                "type": "status",
+                                "order_id": record.get("order_id"),
+                            }),
+                        )
+                        print(
+                            f"[REPLY-NOTIFICATION] Published: {record.get('order_id')}",
+                            flush=True,
+                        )
+                    except redis.RedisError as exc:
+                        print(
+                            f"[REPLY-NOTIFICATION-ERR] {exc}",
+                            flush=True,
+                        )
+
         except sqlite3.Error as exc:
-            print(f"[LORA-REPLY-SYNC-ERR] ask={record.get('ask_pkt_id')} {exc}",
-                  flush=True)
+            print(
+                f"[LORA-REPLY-SYNC-ERR] ask={record.get('ask_pkt_id')} {exc}",
+                flush=True,
+            )
+
     return added
 
 
