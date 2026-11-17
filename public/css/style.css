@@ -810,3 +810,118 @@ pre {
     font-size: 22px;
   }
 }
+
+/* ============================
+   通知システム
+============================ */
+
+.dashboard-page .notification-wrapper {
+  position: relative;
+}
+
+.dashboard-page .notification-button {
+  position: relative;
+  border: 1px solid #40516a;
+  border-radius: 10px;
+  background: #243348;
+  color: #fff;
+  padding: 10px 13px;
+  cursor: pointer;
+  font-size: 18px;
+}
+
+.dashboard-page .notification-button:hover {
+  background: #30445c;
+}
+
+.dashboard-page .notification-count {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  min-width: 19px;
+  padding: 2px 5px;
+  background: #d65d65;
+  color: white;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: bold;
+}
+
+.dashboard-page .notification-count[hidden],
+.dashboard-page .notification-panel[hidden] {
+  display: none;
+}
+
+.dashboard-page .notification-panel {
+  position: absolute;
+  top: calc(100% + 12px);
+  right: 0;
+  width: min(350px, 90vw);
+  max-height: 420px;
+  overflow-y: auto;
+  background: #1c293a;
+  border: 1px solid #40516a;
+  border-radius: 12px;
+  z-index: 1000;
+  box-shadow: 0 12px 30px #0005;
+  color: #f1f5f9;
+}
+
+.dashboard-page .notification-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 15px;
+  border-bottom: 1px solid #40516a;
+}
+
+.dashboard-page .notification-header span {
+  font-size: 12px;
+  color: #a8bad0;
+}
+
+.dashboard-page .notification-list {
+  padding: 10px;
+}
+
+.dashboard-page .notification-item {
+  padding: 12px;
+  margin-bottom: 8px;
+  background: #243348;
+  border-radius: 8px;
+  border: 1px solid #35475f;
+}
+
+.dashboard-page .notification-item.unread {
+  border-left: 3px solid #4ba3c7;
+}
+
+.dashboard-page .notification-item.emergency {
+  border-left: 3px solid #e56565;
+}
+
+.dashboard-page .notification-item strong {
+  display: block;
+  font-size: 14px;
+  color: #f1f5f9;
+}
+
+.dashboard-page .notification-item p {
+  margin: 6px 0;
+  color: #cbd5e1;
+  font-size: 13px;
+}
+
+.dashboard-page .notification-item small {
+  color: #94a3b8;
+  font-size: 11px;
+}
+/* 通知クリック時の表示 */
+.dashboard-page .notification-item {
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.dashboard-page .notification-item:hover {
+  background: #30445c;
+}

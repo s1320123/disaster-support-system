@@ -4,7 +4,36 @@ const express = require("express");
 const Redis = require("ioredis");
 const sqlite3 = require("sqlite3").verbose();
 
+// 通知システム用
+const http = require("http");
+const { Server } = require("socket.io");
+
 const app = express();
+
+// ExpressとSocket.IOで共通のHTTPサーバーを使用
+const server = http.createServer(app);
+const io = new Server(server);
+
+// ブラウザとの接続を確認
+io.on("connection", async (socket) => {
+  try {
+    const nodeId = await getLocalNodeId();
+
+    // 現在の基地局専用ルームに参加
+    socket.join(`node:${nodeId}`);
+
+    console.log(
+      `[NOTIFICATION] ${socket.id} joined node:${nodeId}`
+    );
+
+    socket.on("disconnect", () => {
+      console.log("[NOTIFICATION] Disconnected:", socket.id);
+    });
+  } catch (err) {
+    console.error("[NOTIFICATION-CONNECT-ERR]", err);
+    socket.disconnect(true);
+  }
+});
 
 const PORT = process.env.PORT || 3000;
 const REDIS_URL = process.env.REDIS_URL || "redis://127.0.0.1:6379";
@@ -12,6 +41,56 @@ const SQLITE_PATH = process.env.SQLITE_PATH || "/var/lib/lora-gateway/gateway.db
 
 const redis = new Redis(REDIS_URL);
 const db = new sqlite3.Database(SQLITE_PATH);
+
+
+/* ========================================
+   Pythonからの通知イベントを受信
+======================================== */
+
+// 通常のRedis接続とは別に購読専用接続を作成
+const notificationSubscriber = new Redis(REDIS_URL);
+
+notificationSubscriber.on("error", (err) => {
+  console.error("[NOTIFICATION-REDIS-ERR]", err);
+});
+
+notificationSubscriber.subscribe(
+  "event:notification:new"
+).catch((err) => {
+  console.error("[NOTIFICATION-SUBSCRIBE-ERR]", err);
+});
+
+
+notificationSubscriber.on("message", async (channel, message) => {
+  if (channel !== "event:notification:new") return;
+
+  try {
+    const event = JSON.parse(message);
+    const localNodeId = await getLocalNodeId();
+
+    if (event.node_id !== localNodeId) return;
+
+    if (
+      typeof event.order_id !== "string" ||
+      !event.order_id.startsWith("lora-")
+    ) {
+      return;
+    }
+
+    // ブラウザに通知一覧の再取得を指示
+    io.to(`node:${localNodeId}`)
+      .emit("notification:refresh");
+
+    console.log(
+      `[NOTIFICATION] Refresh sent to node:${localNodeId}`
+    );
+
+  } catch (err) {
+    console.error("[NOTIFICATION-RECEIVE-ERR]", err);
+  }
+});
+
+
 
 // LoRa config.OWN_ID is published by mesh_daemon.py into this local Redis.
 const LOCAL_NODE_ID_KEY = "lora:gateway:local_node_id";
@@ -99,6 +178,124 @@ app.get("/mobile", (req, res) => {
   res.render("mobile_home");
 });
 
+// ========================================
+// 通知システム：テスト通知の保存
+// ========================================
+
+// 開発環境限定のテストAPI
+if (process.env.NODE_ENV === "development") {
+  app.post("/api/notifications/test", async (req, res) => {
+    try {
+      const nodeId = await getLocalNodeId();
+
+      const result = await dbRun(
+        `INSERT INTO notifications
+         (node_id, type, title, message)
+         VALUES (?, ?, ?, ?)`,
+        [
+          nodeId,
+          "order",
+          "テスト通知",
+          "新しい物資の発注が届きました"
+        ]
+      );
+
+      // 保存した通知を取得
+      const notification = await dbGet(
+        "SELECT * FROM notifications WHERE id = ?",
+        [result.lastID]
+      );
+
+// 接続中のブラウザへリアルタイム配信
+io.to(`node:${notification.node_id}`)
+  .emit("notification:new", notification);
+
+      res.json({
+        success: true,
+        notificationId: result.lastID,
+        nodeId: nodeId
+      });
+    } catch (err) {
+      console.error("[NOTIFICATION-TEST-ERR]", err);
+      res.status(500).json({
+        success: false,
+        error: "通知の保存に失敗しました"
+      });
+    }
+  });
+}
+
+// ========================================
+// 通知一覧を取得するAPI
+// ========================================
+app.get("/api/notifications", async (req, res) => {
+  try {
+    const nodeId = await getLocalNodeId();
+
+    const notifications = await dbAll(
+      `SELECT
+         id,
+         node_id,
+         type,
+         title,
+         message,
+         is_read,
+         created_at
+       FROM notifications
+       WHERE node_id = ?
+       ORDER BY id DESC
+       LIMIT 50`,
+      [nodeId]
+    );
+
+    res.json(notifications);
+
+  } catch (err) {
+    console.error("[NOTIFICATION-LIST-ERR]", err);
+
+    res.status(500).json({
+      error: "通知一覧の取得に失敗しました"
+    });
+  }
+});
+
+// ========================================
+// 通知を既読にするAPI
+// ========================================
+app.post("/api/notifications/:id/read", async (req, res) => {
+  try {
+    const nodeId = await getLocalNodeId();
+    const notificationId = Number(req.params.id);
+
+    if (!Number.isSafeInteger(notificationId) || notificationId <= 0) {
+      return res.status(400).json({
+        error: "無効な通知IDです"
+      });
+    }
+
+    const result = await dbRun(
+      `UPDATE notifications
+       SET is_read = 1
+       WHERE id = ? AND node_id = ?`,
+      [notificationId, nodeId]
+    );
+
+    if (result.changes === 0) {
+      return res.status(404).json({
+        error: "通知が見つかりません"
+      });
+    }
+
+    res.json({ success: true });
+
+  } catch (err) {
+    console.error("[NOTIFICATION-READ-ERR]", err);
+    res.status(500).json({
+      error: "既読処理に失敗しました"
+    });
+  }
+});
+
 app.post("/send", async (req, res) => {
   const packet = {
     packet_id: `web-${Date.now()}`,
@@ -172,8 +369,9 @@ app.get("/api/nodes", async (req, res) => {
   }
 });
 
-app.listen(PORT, "127.0.0.1", () => {
+server.listen(PORT, "127.0.0.1", () => {
   console.log(`LoRa gateway web app listening on http://127.0.0.1:${PORT}`);
+  console.log("[NOTIFICATION] Socket.IO ready");
 });
 
 app.get("/orders/new", async (req, res) => {
